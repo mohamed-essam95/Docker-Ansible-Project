@@ -1,5 +1,5 @@
 ---
-- name: Deploy 3-Tier Docker App
+- name: Deploy 3-Tier Docker App (Stable Shell Version)
   hosts: localhost
   connection: local
   gather_facts: true
@@ -8,15 +8,66 @@
 
   vars_files:
     - vars/main.yml
-    - vars/secrets.yml
+
+  pre_tasks:
+    - name: Load secrets file if it exists
+      ansible.builtin.include_vars:
+        file: vars/secrets.yml
+      ignore_errors: yes
 
   tasks:
-    - name: Ensure community.docker collection is installed
-      ansible.builtin.command:
-        cmd: ansible-galaxy collection install community.docker --force
-      changed_when: false
+    # ========================================
+    # Debian/Ubuntu Setup
+    # ========================================
+    - name: Install prerequisite packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
 
-    - name: Ensure prerequisite packages installed (CentOS)
+    - name: Create keyrings directory (Debian/Ubuntu)
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      when: ansible_os_family == "Debian"
+
+    - name: Download Docker GPG key (Debian/Ubuntu)
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker repository (Debian/Ubuntu)
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    # ========================================
+    # RedHat/CentOS Setup
+    # ========================================
+    - name: Install prerequisite packages (RedHat/CentOS)
       ansible.builtin.yum:
         name:
           - yum-utils
@@ -25,60 +76,134 @@
           - curl
           - ca-certificates
         state: present
+      when: ansible_os_family == "RedHat"
 
-    - name: Add Docker CE repository
+    - name: Add Docker CE repository (RedHat/CentOS)
       ansible.builtin.yum_repository:
         name: docker-ce-stable
         description: Docker CE Stable - $basearch
-        baseurl: https://download.docker.com/linux/centos/7/$basearch/stable
+        baseurl: "https://download.docker.com/linux/centos/{{ ansible_distribution_major_version }}/$basearch/stable"
         gpgcheck: yes
         gpgkey: https://download.docker.com/linux/centos/gpg
         enabled: yes
+      when: ansible_os_family == "RedHat"
 
-    - name: Install Docker CE
+    - name: Install Docker CE (RedHat/CentOS)
       ansible.builtin.yum:
         name:
           - docker-ce
           - docker-ce-cli
           - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
         state: present
+      when: ansible_os_family == "RedHat"
 
+    # ========================================
+    # Common Tasks (All Distributions)
+    # ========================================
     - name: Ensure Docker service is running
       ansible.builtin.service:
         name: docker
         state: started
         enabled: yes
 
-    - name: Docker login
-      community.docker.docker_login:
-        username: "{{ DOCKER_USERNAME }}"
-        password: "{{ DOCKER_PASSWORD }}"
+    - name: Add current user to docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: yes
+      when: ansible_user_id != "root"
 
-    - name: Create db_password.txt with variable content
-      copy:
-        dest: ./db_password.txt
+    # ========================================
+    # Prepare Secrets
+    # ========================================
+    - name: Create db_password.txt
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/db_password.txt"
         content: "{{ DB_PASSWORD }}"
         mode: '0600'
+      when: DB_PASSWORD is defined
 
-    - name: Build & push images (loop)
-      community.docker.docker_image:
-        build:
-          path: "{{ item.path }}"
-          dockerfile: "{{ item.path }}/Dockerfile"  
-        name: "{{ DOCKER_USERNAME }}/{{ item.name }}"
-        tag: "{{ item.tag }}"
-        source: build
-        push: true
-      loop: "{{ images }}"
+    # ========================================
+    # Deploy with Docker Compose
+    # ========================================
+    - name: Stop existing containers (if any)
+      ansible.builtin.shell: docker compose down
+      args:
+        chdir: "{{ playbook_dir }}"
+      ignore_errors: yes
 
-    - name: Run docker-compose (v2)
-      community.docker.docker_compose_v2:
-        project_src: "{{ playbook_dir }}"
-        build: never
-        state: present
-        pull: never
+    - name: Build and start containers with docker-compose
+      ansible.builtin.shell: docker compose up -d --build
+      args:
+        chdir: "{{ playbook_dir }}"
+      register: compose_up
 
+    - name: Show docker compose output
+      ansible.builtin.debug:
+        var: compose_up.stdout_lines
+
+    - name: Wait for containers to stabilize
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Check container status
+      ansible.builtin.shell: docker compose ps
+      args:
+        chdir: "{{ playbook_dir }}"
+      register: compose_status
+
+    - name: Display running containers
+      ansible.builtin.debug:
+        msg: "{{ compose_status.stdout_lines }}"
+
+    - name: Check frontend health
+      ansible.builtin.uri:
+        url: http://localhost:8080
+        status_code: 200
+      register: frontend_health
+      ignore_errors: yes
+      retries: 5
+      delay: 3
+
+    - name: Check backend health
+      ansible.builtin.uri:
+        url: http://localhost:5033
+        status_code: 200
+      register: backend_health
+      ignore_errors: yes
+      retries: 5
+      delay: 3
+
+    - name: Deployment Summary
+      ansible.builtin.debug:
+        msg:
+          - "========================================="
+          - "   Deployment Complete!"
+          - "========================================="
+          - ""
+          - "Services Status:"
+          - "  Frontend: {{ 'OK ✅' if frontend_health is succeeded else 'Check logs ⚠️' }}"
+          - "  Backend:  {{ 'OK ✅' if backend_health is succeeded else 'Check logs ⚠️' }}"
+          - ""
+          - "Access URLs:"
+          - "  Frontend: http://localhost:8080"
+          - "  Backend:  http://localhost:5033"
+          - ""
+          - "Useful Commands:"
+          - "  View logs:     docker compose logs -f"
+          - "  Stop app:      docker compose down"
+          - "  Restart:       docker compose restart"
+          - "  Health check:  ./check-health.sh"
+          - ""
+          - "========================================="
+
+    # ========================================
+    # Cleanup (Optional)
+    # ========================================
     - name: Remove db_password.txt
-      file:
-        path: ./db_password.txt
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/db_password.txt"
         state: absent
+      when: cleanup_secrets | default(false) | bool

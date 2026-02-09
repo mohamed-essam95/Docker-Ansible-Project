@@ -1,0 +1,21 @@
+---
+# Docker Hub username (without duplicating in image names)
+DOCKER_USERNAME: mohamedessam955559
+
+# Database password
+DB_PASSWORD: 1234
+
+# Images to build and push
+images:
+  - name: frontend-react
+    tag: latest
+    path: ./React-Frontend
+  
+  - name: backend-dotnet-api
+    tag: latest
+    path: ./DotNet-Backend
+  
+  # Add more images as needed
+  # - name: database
+  #   tag: latest
+  #   path: ./Database

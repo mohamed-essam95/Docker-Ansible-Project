@@ -3,7 +3,7 @@ services:
   frontend:
     build:
       context: React-Frontend 
-    image: ahmed1102001/frontend-react:latest
+    image: mohamedessam955559/frontend-react:latest
     restart: always
     container_name: frontend
     ports:
@@ -15,7 +15,7 @@ services:
   backend:
     build:
       context: DotNet-Backend 
-    image: ahmed1102001/backend-dotnet-api:latest
+    image: mohamedessam955559/backend-dotnet-api:latest
     container_name: backend
     restart: always
     ports:
