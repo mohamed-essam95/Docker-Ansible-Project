@@ -2,7 +2,7 @@
 
 A fully automated deployment solution for a 3-tier web application using Docker, Docker Compose, and Ansible. This project demonstrates infrastructure as code principles with support for both Debian and RedHat-based Linux distributions.
 
-![Application Screenshot](screenshot.png)
+![Application Screenshot](Screenshot.png)
 
 ## 📋 Table of Contents
 
